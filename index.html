@@ -8,27 +8,27 @@
 body{font-family:system-ui,-apple-system,sans-serif;margin:0;background:#f5f6f8;color:#222}
 header{background:#111827;color:#fff;padding:18px 16px}
 main{max-width:760px;margin:auto;padding:14px}
-.card{background:#fff;border-radius:14px;padding:16px;margin:12px 0;box-shadow:0 2px 10px #00000010}
-input,button{font:inherit}
-input{width:100%;box-sizing:border-box;padding:12px;border:1px solid #ccd1d8;border-radius:10px;margin:8px 0}
+.card{background:#fff;border-radius:14px;padding:16px;margin:12px 0;box-shadow:0 2px 10px #0001}
+input[type=text]{width:100%;box-sizing:border-box;padding:12px;border:1px solid #ccd1d8;border-radius:10px;margin:8px 0}
 button{border:0;border-radius:10px;padding:11px 15px;background:#111827;color:#fff;font-weight:700}
 button:disabled{opacity:.5}
-.status{margin-top:10px;font-size:14px}
-.horse{display:flex;gap:10px;align-items:flex-start;padding:10px 0;border-bottom:1px solid #eee}
-.horse:last-child{border-bottom:0}
+.horse{display:flex;gap:10px;padding:10px 0;border-bottom:1px solid #eee}
 .horse input{width:auto;margin-top:4px}
 .small{font-size:12px;color:#667085}
-.result{font-size:18px;font-weight:700}
+.airow{padding:12px 0;border-bottom:1px solid #eee}
+.badge{display:inline-block;min-width:28px;text-align:center;font-weight:800;margin-right:6px}
+.reason{font-size:13px;color:#555;margin-top:4px}
+.notice{padding:10px;border-radius:10px;background:#f3f4f6;font-size:13px}
 </style>
 </head>
 <body>
-<header><strong>🏇 ちゃとた競馬AI</strong><div class="small" style="color:#d1d5db">netkeibaレース情報取得・買い目計算プロトタイプ</div></header>
+<header><strong>🏇 ちゃとた競馬AI</strong><div class="small" style="color:#d1d5db">出馬表取得・買い目計算・AI分析プロトタイプ</div></header>
 <main>
 <div class="card">
 <h3>① レースを読み込む</h3>
-<input id="url" value="https://race.sp.netkeiba.com/race/shutuba.html?race_id=202606040611" placeholder="netkeibaの出馬表URL">
+<input id="url" type="text" value="https://race.sp.netkeiba.com/race/shutuba.html?race_id=202606040611">
 <button id="load">レース情報を取得</button>
-<div id="status" class="status"></div>
+<div id="status"></div>
 </div>
 
 <div class="card">
@@ -40,49 +40,72 @@ button:disabled{opacity:.5}
 <div class="card">
 <h3>③ BOX点数</h3>
 <div>選択頭数：<span id="count">0</span>頭</div>
-<div>馬連BOX：<span id="umaren">0</span>点（<span id="umarenY">¥0</span>）</div>
-<div>3連複BOX：<span id="sanren">0</span>点（<span id="sanrenY">¥0</span>）</div>
+<div>馬連BOX：<span id="umaren">0</span>点（¥<span id="uy">0</span>）</div>
+<div>3連複BOX：<span id="sanren">0</span>点（¥<span id="sy">0</span>）</div>
 </div>
 
 <div class="card">
-<h3>④ AI分析（サンプル）</h3>
-<p>◎ 本命：選択馬の中から軸候補を分析</p>
-<p>○ 対抗：相手候補</p>
-<p>▲ 単穴：中穴候補</p>
-<p>☆ 穴：展開・馬場・調教などから拾う候補</p>
-<div class="small">※現在はプロトタイプ。実際のAI評価・調教・過去走・オッズ連携は今後追加します。</div>
+<h3>④ AI分析</h3>
+<div id="ai" class="notice">レースを読み込むと、取得できた情報から暫定評価を作ります。</div>
 </div>
 </main>
+
 <script>
 const $=id=>document.getElementById(id);
-function comb(n,r){if(n<r)return 0;let x=1;for(let i=1;i<=r;i++)x=x*(n-r+i)/i;return Math.round(x)}
-function update(){
- const n=document.querySelectorAll('#horses input[type=checkbox]:checked').length;
- $('count').textContent=n;
- const u=comb(n,2),s=comb(n,3);
- $('umaren').textContent=u;$('umarenY').textContent='¥'+u*100;
- $('sanren').textContent=s;$('sanrenY').textContent='¥'+s*100;
+function C(n,r){if(n<r)return 0;let x=1;for(let i=1;i<=r;i++)x=x*(n-r+i)/i;return Math.round(x)}
+function up(){
+  let n=document.querySelectorAll('#horses input:checked').length;
+  let u=C(n,2),s=C(n,3);
+  $('count').textContent=n;$('umaren').textContent=u;$('uy').textContent=u*100;
+  $('sanren').textContent=s;$('sy').textContent=s*100;
+}
+function oddsFrom(text){
+  let ms=[...text.matchAll(/(?:単勝|オッズ|人気)?\s*(\d+(?:\.\d+)?)\s*(?:倍)?/g)];
+  let vals=ms.map(x=>parseFloat(x[1])).filter(x=>x>=1.0&&x<=999);
+  return vals.length?Math.min(...vals):null;
+}
+function makeAI(horses){
+  // 現段階では取得できた出馬表テキストから機械的に候補を作る暫定エンジン。
+  // 調教・過去走・馬場・騎手・正式オッズ等は今後構造化して加点する。
+  let scored=horses.map((h,i)=>{
+    let score=50, reasons=[];
+    let o=oddsFrom(h.raw);
+    if(o!==null){
+      score += Math.max(0, 30-Math.min(30,o*3));
+      reasons.push('取得テキスト内のオッズ候補を反映');
+    }else{
+      reasons.push('オッズ情報を十分に取得できていないため暫定評価');
+    }
+    if(h.name) reasons.push('馬名を正しく取得');
+    // 同点が大量に出ないように、ごく小さい固定差だけ付与
+    score += Math.max(0,8-i*0.2);
+    return {...h,score,odds:o,reasons};
+  }).sort((a,b)=>b.score-a.score);
+
+  const labels=['◎','○','▲','☆'];
+  let out='<div class="small">現時点は「出馬表から取得できた情報」による暫定分析です。今後、調教・過去走・斤量・騎手・馬場・正式オッズ等を構造化して精度を上げます。</div>';
+  scored.slice(0,4).forEach((h,i)=>{
+    out+=`<div class="airow"><span class="badge">${labels[i]}</span><b>${h.number}番 ${h.name||''}</b> <span class="small">暫定${h.score.toFixed(1)}点</span><div class="reason">${h.reasons.join(' / ')}</div></div>`;
+  });
+  return out;
 }
 $('load').onclick=async()=>{
- const url=$('url').value.trim();
- $('status').textContent='取得中…';
- $('load').disabled=true;
- try{
-  const res=await fetch('/api/race',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url})});
-  const data=await res.json();
-  if(!res.ok)throw new Error(data.error||'取得に失敗しました');
-  $('raceTitle').textContent=`${data.title} / Race ID: ${data.race_id}`;
-  $('horses').innerHTML='';
-  data.horses.forEach((h,i)=>{
-   const div=document.createElement('label');div.className='horse';
-   div.innerHTML=`<input type="checkbox"><div><b>${i+1}.</b> ${h.raw}</div>`;
-   div.querySelector('input').onchange=update;
-   $('horses').appendChild(div);
-  });
-  $('status').textContent=`取得完了：${data.horses.length}件`;
-  update();
- }catch(e){$('status').textContent='⚠️ '+e.message}
- finally{$('load').disabled=false}
+  let b=$('load');b.disabled=true;$('status').textContent='取得中…';
+  try{
+    let r=await fetch('/api/race',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url:$('url').value.trim()})});
+    let d=await r.json(); if(!r.ok)throw Error(d.error||'取得に失敗しました');
+    $('raceTitle').textContent=d.title+' / '+d.horses.length+'頭';
+    $('horses').innerHTML='';
+    d.horses.forEach(h=>{
+      let x=document.createElement('label');x.className='horse';
+      x.innerHTML='<input type="checkbox"><div><b>'+h.number+'番</b> '+(h.name||h.raw)+'</div>';
+      x.querySelector('input').onchange=up;$('horses').appendChild(x);
+    });
+    $('status').textContent='取得完了：'+d.horses.length+'頭';
+    $('ai').innerHTML=makeAI(d.horses);
+    up();
+  }catch(e){$('status').textContent='⚠️ '+e.message}
+  finally{b.disabled=false}
 }
 </script>
 </body>
