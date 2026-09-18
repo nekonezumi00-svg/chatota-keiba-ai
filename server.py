@@ -8,218 +8,180 @@ RACE_ID_RE=re.compile(r"(?:race_id=|/race/)(\d{10,12})")
 def clean(s):
     return re.sub(r"\s+"," ",s or "").strip()
 
-def horse_name_from_anchor(a):
-    t=clean(a.get_text(" ",strip=True))
-    # Netkeiba commonly appends this to the horse-detail link.
-    t=re.sub(r"\s*のデータベース\s*$","",t)
-    return t
+def horse_name(a):
+    return re.sub(r"\s*のデータベース\s*$","",clean(a.get_text(" ",strip=True)))
 
-def is_horse_anchor(a):
-    href=(a.get("href") or "")
-    text=clean(a.get_text(" ",strip=True))
-    return "/horse/" in href and text and (
-        "データベース" in text or
-        a.select_one("img") is not None or
-        len(text)<=40
-    )
-
-def unique_horse_anchors(node):
+def horse_anchors(node):
     seen={}
     for a in node.select("a[href*='/horse/']"):
-        if not is_horse_anchor(a):
-            continue
-        name=horse_name_from_anchor(a)
-        href=(a.get("href") or "").split("?")[0]
-        if name and href and href not in seen:
-            seen[href]=(name,a)
+        n=horse_name(a); h=(a.get("href") or "").split("?")[0]
+        if n and h and h not in seen:
+            seen[h]=(n,a)
     return list(seen.values())
 
-def find_row_container(a):
-    # Prefer the smallest ancestor that looks like a runner row:
-    # it contains the horse link plus jockey link or weight-like text.
-    cur=a
-    best=None
-    for depth in range(1,9):
-        cur=cur.parent
-        if cur is None: break
-        txt=clean(cur.get_text(" ",strip=True))
-        if len(txt)>1800: continue
-        jockey_links=cur.select("a[href*='/jockey/']")
-        weight=re.search(r"(?:斤量|負担重量)\s*[:：]?\s*(?:[0-9]{2}(?:\.[0-9])?)",txt)
-        if jockey_links or weight:
-            best=cur
-            # If it contains only one horse link, this is almost certainly its row.
-            if len(unique_horse_anchors(cur))==1:
-                return cur
-    return best or a.parent
-
-def explicit_number(container):
-    selectors=[
-        "[data-umaban]","[data-horse-no]","[data-number]",
-        ".Umaban","[class*='Umaban']","[class*='umaban']",
-        ".HorseNum","[class*='HorseNum']"
-    ]
-    for sel in selectors:
-        try:
-            els=container.select(sel)
-        except Exception:
-            els=[]
-        for el in els:
-            txt=clean(el.get_text(" ",strip=True))
-            m=re.search(r"(?<!\d)(1[0-8]|[1-9])(?!\d)",txt)
-            if m:
-                return int(m.group(1))
-    return None
-
-def number_from_structure(container,name):
-    # Inspect integer-only cells/spans. If two numbers exist, netkeiba's
-    # first is often frame number and the second is horse number.
+def numeric_values(node):
     vals=[]
-    for el in container.select("th,td,span,div"):
-        txt=clean(el.get_text(" ",strip=True))
-        if re.fullmatch(r"(?:1[0-8]|[1-9])",txt):
-            vals.append(int(txt))
-    if vals:
-        # Preserve order but remove immediate duplicates.
-        compact=[]
-        for n in vals:
-            if not compact or compact[-1]!=n:
-                compact.append(n)
-        if len(compact)>=2:
-            return compact[1]
-        # If only one value exists, use it only when there is no frame marker.
-        if len(compact)==1:
-            return compact[0]
+    for el in node.select("[data-umaban],[data-horse-no],[data-number],.Umaban,.umaban,.HorseNum,.HorseNumber,.Num,.WakuNum,.WakuNumBox,td,th,span"):
+        t=clean(el.get_text(" ",strip=True))
+        # Only accept short, standalone integer fields.
+        if re.fullmatch(r"(?:1[0-8]|[1-9])",t):
+            vals.append((int(t),el))
+        for attr in ("data-umaban","data-horse-no","data-number"):
+            v=el.get(attr)
+            if v and re.fullmatch(r"(?:1[0-8]|[1-9])",v):
+                vals.append((int(v),el))
+    return vals
 
-    txt=clean(container.get_text(" ",strip=True))
-    pos=txt.find(name)
-    if pos>=0:
-        before=txt[max(0,pos-140):pos]
-        nums=list(re.finditer(r"(?<!\d)(1[0-8]|[1-9])(?!\d)",before))
-        if len(nums)>=2:
-            return int(nums[-1].group(1))
-        if nums:
-            return int(nums[-1].group(1))
+def find_row(a):
+    # First look for a table row containing this horse.
+    tr=a.find_parent("tr")
+    if tr:
+        return tr
+    # Otherwise find the smallest ancestor containing this horse and either
+    # a jockey link or several short numeric fields.
+    cur=a
+    best=a.parent
+    for _ in range(8):
+        cur=cur.parent if cur else None
+        if cur is None: break
+        if len(clean(cur.get_text(" ",strip=True)))>2500: continue
+        if cur.select("a[href*='/jockey/']") or len(numeric_values(cur))>=2:
+            best=cur
+            if len(horse_anchors(cur))==1:
+                return cur
+    return best
+
+def extract_number(a,row,name):
+    # 1. Explicit horse-number fields.
+    for node in (row,a):
+        for n,_ in numeric_values(node):
+            return n
+
+    # 2. Inspect raw HTML around this exact horse link. This catches hidden
+    # data attributes/classes that may not be visible in text.
+    try:
+        html=str(a.parent)
+        patterns=[
+            r'data-(?:umaban|horse-no|number)=["\'](1[0-8]|[1-9])["\']',
+            r'class=["\'][^"\']*(?:Umaban|umaban|HorseNum)[^"\']*["\'][^>]*>\s*(1[0-8]|[1-9])\s*<',
+        ]
+        for pat in patterns:
+            m=re.search(pat,html,re.I)
+            if m:return int(m.group(1))
+    except Exception:
+        pass
+
+    # 3. In the row text, choose the numeric token immediately before the
+    # horse name. This is a fallback only.
+    txt=clean(row.get_text(" ",strip=True))
+    p=txt.find(name)
+    if p>=0:
+        before=txt[max(0,p-180):p]
+        ns=list(re.finditer(r"(?<!\d)(1[0-8]|[1-9])(?!\d)",before))
+        if ns:return int(ns[-1].group(1))
     return None
 
-def parse_anchor(a):
-    name=horse_name_from_anchor(a)
-    row=find_row_container(a)
+def extract_jockey(row):
+    # Get the jockey from an actual jockey link/class if possible.
+    for sel in ["a[href*='/jockey/']",".Jockey",".Jockey_Name",".JockeyName",
+                "[class*='Jockey']"]:
+        try: el=row.select_one(sel)
+        except Exception: el=None
+        if el:
+            t=clean(el.get_text(" ",strip=True))
+            if t:return t
+
+    # Fallback: remove weight-like trailing number from a likely jockey field.
+    return ""
+
+def extract_weight(row):
+    # Weight is usually a standalone numeric cell around 50-60kg.
+    for sel in [".Kinryo",".Weight",".Barei","[class*='Kinryo']",
+                "[class*='Weight']","[class*='Barei']"]:
+        try: el=row.select_one(sel)
+        except Exception: el=None
+        if el:
+            t=clean(el.get_text(" ",strip=True))
+            m=re.search(r"(?:5[0-9]|6[0-9])(?:\.[05])?",t)
+            if m:return m.group(0)
+
+    txt=clean(row.get_text(" ",strip=True))
+    # Prefer a 50-60 number immediately following a jockey-looking token.
+    nums=list(re.finditer(r"(?<!\d)(5[0-9](?:\.[05])?|6[0-9](?:\.[05])?)(?!\d)",txt))
+    if nums:return nums[-1].group(1)
+    return ""
+
+def parse_horse(a):
+    name=horse_name(a)
+    row=find_row(a)
     raw=clean(row.get_text(" ",strip=True)) if row else name
+    number=extract_number(a,row,name)
+    jockey=extract_jockey(row)
+    weight=extract_weight(row)
 
-    number=explicit_number(row) if row else None
-    if number is None and row:
-        number=number_from_structure(row,name)
-
-    jockey=""
-    if row:
-        for sel in ["a[href*='/jockey/']",".Jockey",".Jockey_Name",".JockeyName","[class*='Jockey']"]:
-            try: el=row.select_one(sel)
-            except Exception: el=None
-            if el:
-                jockey=clean(el.get_text(" ",strip=True))
-                if jockey: break
-
-    weight=""
-    if row:
-        for sel in [".Kinryo",".Weight",".Barei","[class*='Kinryo']","[class*='Weight']","[class*='Barei']"]:
-            try: el=row.select_one(sel)
-            except Exception: el=None
-            if el:
-                weight=clean(el.get_text(" ",strip=True))
-                if weight: break
-    if not weight:
-        m=re.search(r"(?:斤量|負担重量)\s*[:：]?\s*([0-9]{2}(?:\.[0-9])?)",raw)
-        if m: weight=m.group(1)
+    # The screenshot showed the weight appended to jockey. Clean that case.
+    if jockey and weight:
+        jockey=re.sub(r"\s*"+re.escape(weight)+r"\s*$","",jockey).strip()
 
     odds=""
-    if row:
-        for sel in [".Odds",".Odds_Ninki","[class*='Odds']"]:
-            try: el=row.select_one(sel)
-            except Exception: el=None
-            if el:
-                odds=clean(el.get_text(" ",strip=True))
-                if odds: break
+    for sel in [".Odds",".Odds_Ninki","[class*='Odds']"]:
+        try:el=row.select_one(sel)
+        except Exception:el=None
+        if el:
+            odds=clean(el.get_text(" ",strip=True))
+            if odds:break
 
-    return {"number":number,"name":name,"jockey":jockey,"weight":weight,"odds":odds,"raw":raw}
+    return {"number":number,"name":name,"jockey":jockey,"weight":weight,
+            "odds":odds,"raw":raw}
 
 def get_horses(soup):
-    # Primary: horse-detail links whose visible text is the database-style
-    # runner link. These were the 13 actual runners seen in v9.
-    anchors=[]
-    for a in soup.select("a[href*='/horse/']"):
-        if is_horse_anchor(a):
-            anchors.append(a)
+    all_links=horse_anchors(soup)
+    if not all_links:return []
 
-    # Deduplicate by URL.
-    unique={}
-    for a in anchors:
-        href=(a.get("href") or "").split("?")[0]
-        if href and href not in unique:
-            unique[href]=a
-
-    # Prefer a set of 2-18 links that share a plausible race-entry container.
-    # Score each ancestor by how many unique horse links it contains.
+    # Find the largest plausible group of horse links in one container.
     candidates=[]
-    for a in unique.values():
+    for _,a in all_links:
         cur=a
         for _ in range(8):
-            cur=cur.parent
-            if cur is None: break
-            hs=unique_horse_anchors(cur)
+            cur=cur.parent if cur else None
+            if cur is None:break
+            hs=horse_anchors(cur)
             if 2<=len(hs)<=18:
-                candidates.append((len(hs),cur,hs))
-
+                candidates.append((len(hs),hs))
     if candidates:
-        # Largest group wins. This prevents the v10 "zero rows" problem while
-        # avoiding arbitrary small groups.
-        _,container,hs=max(candidates,key=lambda x:x[0])
-        links=hs
+        links=max(candidates,key=lambda x:x[0])[1]
     else:
-        links=[(horse_name_from_anchor(a),a) for a in unique.values()]
+        links=all_links
 
-    horses=[parse_anchor(a) for _,a in links]
+    horses=[parse_horse(a) for _,a in links]
 
-    # If we got an implausibly large collection, prefer only links with a
-    # database-style visible label, which is the actual runner list on the
-    # mobile page.
-    if len(horses)>18:
-        db=[a for a in unique.values() if "データベース" in clean(a.get_text(" ",strip=True))]
-        if 2<=len(db)<=18:
-            horses=[parse_anchor(a) for a in db]
-
-    # Deduplicate by horse name.
+    # Deduplicate by horse URL.
     out=[];seen=set()
     for h in horses:
-        if h["name"] in seen: continue
-        seen.add(h["name"]);out.append(h)
+        key=h["name"]
+        if key not in seen:
+            seen.add(key);out.append(h)
 
-    # Sort only if numbers are both present and unique.
+    # If every number is available and unique, sort by number.
     nums=[h["number"] for h in out]
-    if len(out)>=2 and all(n is not None for n in nums) and len(set(nums))==len(nums):
+    if len(out) and all(n is not None for n in nums) and len(set(nums))==len(nums):
         out.sort(key=lambda x:x["number"])
 
     return out
 
 def fetch_race(url):
     m=RACE_ID_RE.search(url)
-    if not m: raise ValueError("netkeibaのレースURLからrace_idを取得できませんでした。")
+    if not m:raise ValueError("netkeibaのレースURLからrace_idを取得できませんでした。")
     race_id=m.group(1)
-
-    r=requests.get(
-        url,
-        headers={"User-Agent":"Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 Chrome/130.0 Mobile Safari/537.36"},
-        timeout=20
-    )
+    r=requests.get(url,headers={"User-Agent":"Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 Chrome/130.0 Mobile Safari/537.36"},timeout=20)
     r.raise_for_status()
     soup=BeautifulSoup(r.text,"html.parser")
     title=clean(soup.title.get_text(" ",strip=True)) if soup.title else f"Race {race_id}"
     horses=get_horses(soup)
-
     return {"race_id":race_id,"title":title,"horses":horses}
 
 @app.get("/")
-def index(): return send_from_directory(".","index.html")
+def index():return send_from_directory(".","index.html")
 
 @app.post("/api/race")
 def api_race():
