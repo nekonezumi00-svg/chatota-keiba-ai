@@ -5,125 +5,154 @@ from flask import Flask,jsonify,request,send_from_directory
 app=Flask(__name__,static_folder=".",static_url_path="")
 RACE_ID_RE=re.compile(r"(?:race_id=|/race/)(\d{10,12})")
 
-def unique_horse_links(node):
-    seen={}
-    for a in node.select("a[href*='/horse/']"):
-        name=a.get_text(" ",strip=True)
-        href=(a.get("href") or "").split("?")[0]
-        if name and href and href not in seen:
-            seen[href]=(name,a)
-    return list(seen.values())
+def clean(s):
+    return re.sub(r"\s+"," ",s or "").strip()
 
-def parse_number_near_anchor(a,name):
-    cur=a
-    for _ in range(6):
-        if cur is None: break
-        # Explicit attributes/classes first
-        for el in cur.select("[data-umaban],[data-horse-no],[data-number],.Umaban,.Num,.WakuNum,.WakuNumBox,[class*='Umaban'],[class*='umaban']"):
-            txt=el.get_text(" ",strip=True)
-            m=re.search(r"(?<!\d)(1[0-8]|[1-9])(?!\d)",txt)
-            if m: return int(m.group(1))
-        txt=re.sub(r"\s+"," ",cur.get_text(" ",strip=True))
-        pos=txt.find(name)
-        if pos>=0:
-            before=txt[max(0,pos-100):pos]
-            nums=list(re.finditer(r"(?<!\d)(1[0-8]|[1-9])(?!\d)",before))
-            if nums:
-                return int(nums[-1].group(1))
-        cur=cur.parent
-    return None
+def first_text(node, selectors):
+    for sel in selectors:
+        el=node.select_one(sel)
+        if el:
+            t=clean(el.get_text(" ",strip=True))
+            if t:return t
+    return ""
 
-def build_items(links):
-    items=[]
-    for name,a in links:
-        items.append({
-            "name":name,
-            "href":a.get("href",""),
-            "number":parse_number_near_anchor(a,name)
-        })
-    return items
+def parse_row(row):
+    raw=clean(row.get_text(" ",strip=True))
 
-def candidate_sets(soup):
-    sets=[]
+    # Horse name: prefer the dedicated Horse_Name area. Do NOT use arbitrary
+    # horse links from the page because netkeiba also has "horse database" links.
+    name=first_text(row,[
+        ".Horse_Name",".HorseName",
+        "[class*='Horse_Name']","[class*='HorseName']"
+    ])
+    if not name:
+        for a in row.select("a[href*='/horse/']"):
+            t=clean(a.get_text(" ",strip=True))
+            if t and "データベース" not in t:
+                name=t
+                break
+    if not name:
+        return None
+
+    # Remove a possible suffix that belongs to a database link.
+    name=re.sub(r"\s*のデータベース\s*$","",name)
+
+    # Horse number: exact number classes first.
+    number=None
+    for sel in [".Umaban","[class*='Umaban']",".HorseNum","[class*='HorseNum']"]:
+        el=row.select_one(sel)
+        if el:
+            m=re.search(r"(?<!\d)(1[0-8]|[1-9])(?!\d)",clean(el.get_text(" ",strip=True)))
+            if m:
+                number=int(m.group(1));break
+
+    # Fallback: in an entry row the first two small integer cells are normally
+    # frame number and horse number; the second is the horse number.
+    if number is None:
+        vals=[]
+        for cell in row.select("th,td"):
+            t=clean(cell.get_text(" ",strip=True))
+            if re.fullmatch(r"(?:1[0-8]|[1-9])",t):
+                vals.append(int(t))
+        if len(vals)>=2:
+            number=vals[1]
+
+    # Jockey: dedicated class/link.
+    jockey=first_text(row,[
+        ".Jockey",".Jockey_Name",".JockeyName",
+        "[class*='Jockey']"
+    ])
+    if not jockey:
+        a=row.select_one("a[href*='/jockey/']")
+        if a:jockey=clean(a.get_text(" ",strip=True))
+
+    # Weight/斤量.
+    weight=first_text(row,[
+        ".Barei",".Weight",".Kinryo",
+        "[class*='Barei']","[class*='Weight']","[class*='Kinryo']"
+    ])
+    if not weight:
+        m=re.search(r"(?:斤量|負担重量)\s*([0-9]{2}(?:\.[0-9])?)",raw)
+        if m:weight=m.group(1)
+
+    # Odds if present in the row.
+    odds=""
+    for sel in [".Odds",".Odds_Ninki","[class*='Odds']"]:
+        el=row.select_one(sel)
+        if el:
+            odds=clean(el.get_text(" ",strip=True))
+            if odds:break
+
+    return {
+        "number":number,
+        "name":name,
+        "jockey":jockey,
+        "weight":weight,
+        "odds":odds,
+        "raw":raw
+    }
+
+def get_entry_rows(soup):
+    # Strictly prefer the actual entry table. This prevents unrelated
+    # "○○のデータベース" links from being mistaken for runners.
     selectors=[
-        "tr.HorseList","tr[class*='HorseList']",
-        "li.HorseList","li[class*='HorseList']",
-        "div.HorseList","div[class*='HorseList']",
-        ".Shutuba_Table","[class*='Shutuba']",
-        ".RaceTable","[class*='RaceTable']",
-        "table"
+        "tr.HorseList",
+        "tr[class*='HorseList']",
+        ".Shutuba_Table tr",
+        "table.Shutuba_Table tr",
+        "table[class*='Shutuba'] tr"
     ]
     for sel in selectors:
-        for node in soup.select(sel):
-            links=unique_horse_links(node)
-            n=len(links)
-            if 2<=n<=18:
-                sets.append(build_items(links))
-    # Every ancestor of every horse link is also a candidate.
-    for a in soup.select("a[href*='/horse/']"):
-        cur=a
-        for _ in range(7):
-            if cur is None: break
-            links=unique_horse_links(cur)
-            n=len(links)
-            if 2<=n<=18:
-                sets.append(build_items(links))
-            cur=cur.parent
-    # Whole page candidate, if it contains a plausible number of horse links.
-    links=unique_horse_links(soup)
-    if 2<=len(links)<=18:
-        sets.append(build_items(links))
-    return sets
+        rows=soup.select(sel)
+        parsed=[]
+        for row in rows:
+            x=parse_row(row)
+            if x:parsed.append(x)
+        # A plausible race field has at least 2 and at most 18 runners.
+        if 2<=len(parsed)<=18:
+            return parsed
 
-def score_candidate(items):
-    # Prefer the largest plausible group; a real entry list is normally the
-    # largest contiguous group of horse-detail links on a shutuba page.
-    n=len(items)
-    numbered=sum(x["number"] is not None for x in items)
-    unique_nums=len({x["number"] for x in items if x["number"] is not None})
-    return (n, numbered, unique_nums)
+    # Fallback: inspect table rows, but only accept rows that contain an
+    # explicit horse name area or a horse link that is NOT a database link.
+    rows=[]
+    for row in soup.find_all("tr"):
+        x=parse_row(row)
+        if x:rows.append(x)
+    if 2<=len(rows)<=18:return rows
+    return []
 
 def fetch_race(url):
     m=RACE_ID_RE.search(url)
-    if not m: raise ValueError("netkeibaのレースURLからrace_idを取得できませんでした。")
+    if not m:raise ValueError("netkeibaのレースURLからrace_idを取得できませんでした。")
     race_id=m.group(1)
 
-    r=requests.get(url,headers={"User-Agent":"Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 Chrome/130.0 Mobile Safari/537.36"},timeout=20)
+    r=requests.get(
+        url,
+        headers={"User-Agent":"Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 Chrome/130.0 Mobile Safari/537.36"},
+        timeout=20
+    )
     r.raise_for_status()
     soup=BeautifulSoup(r.text,"html.parser")
-    title=soup.title.get_text(" ",strip=True) if soup.title else f"Race {race_id}"
+    title=clean(soup.title.get_text(" ",strip=True)) if soup.title else f"Race {race_id}"
 
-    candidates=candidate_sets(soup)
-    if not candidates:
-        return {"race_id":race_id,"title":title,"horses":[],"horse_link_count":len(unique_horse_links(soup))}
+    horses=get_entry_rows(soup)
 
-    # Critical v9 change: don't take the first 4/5-link container.
-    # Choose the largest plausible horse group.
-    best=max(candidates,key=score_candidate)
+    # Deduplicate by actual horse name while keeping order from the entry table.
+    out=[];seen=set()
+    for h in horses:
+        key=h["name"]
+        if key in seen:continue
+        seen.add(key);out.append(h)
 
-    # Deduplicate and keep all detected horses.
-    by_href={}
-    for x in best:
-        by_href[x["href"].split("?")[0]]=x
-    horses=list(by_href.values())
+    # Sort only when real horse numbers are available and unique.
+    nums=[h["number"] for h in out if h["number"] is not None]
+    if len(nums)==len(out) and len(set(nums))==len(nums):
+        out.sort(key=lambda x:x["number"])
 
-    # If duplicate numbers occur, only remove duplicates when the same horse
-    # link is duplicated; do not throw away legitimate horses just because
-    # number parsing was imperfect.
-    known=[x for x in horses if x["number"] is not None]
-    unknown=[x for x in horses if x["number"] is None]
-    known.sort(key=lambda x:x["number"])
-    horses=known+unknown
-
-    return {
-        "race_id":race_id,
-        "title":title,
-        "horses":horses,
-        "horse_link_count":len(unique_horse_links(soup))
-    }
+    return {"race_id":race_id,"title":title,"horses":out}
 
 @app.get("/")
-def index(): return send_from_directory(".","index.html")
+def index():return send_from_directory(".","index.html")
 
 @app.post("/api/race")
 def api_race():
