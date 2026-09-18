@@ -1,18 +1,15 @@
-# ちゃとた競馬AI
+# ちゃとた競馬AI v8
 
-スマホからnetkeibaの出馬表URLを入力し、レース情報を取得するFlaskプロトタイプです。
+v7で起きた「1頭しか取得できない」問題を想定して、単一CSSセレクタへの依存を減らした版です。
 
-## ローカル起動
-python -m pip install -r requirements.txt
-python server.py
+主な変更:
+- 馬詳細リンク（/horse/）を基準に出走馬を検出
+- tr/div/liなど複数の出馬表構造に対応
+- 馬番の取得方法を複数化
+- 馬番重複を除外
+- 馬番が取れなくても馬名を勝手に捨てない
+- 取得頭数を画面に表示
+- AI分析欄を維持
 
-## Render等のWebサービス
-Build Command:
-pip install -r requirements.txt
-
-Start Command:
+Render Start Command:
 gunicorn server:app --bind 0.0.0.0:$PORT
-
-## 注意
-netkeiba等の外部サイトからデータを取得する場合は、対象サイトの利用規約・robots.txt・アクセス制限・データ利用条件を確認し、許可された範囲で利用してください。
-このプロトタイプは外部サイトへの実接続がこの作業環境では検証されていません。

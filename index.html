@@ -3,110 +3,139 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>ちゃとた競馬AI</title>
+<title>ちゃとた競馬AI v8</title>
 <style>
-body{font-family:system-ui,-apple-system,sans-serif;margin:0;background:#f5f6f8;color:#222}
+*{box-sizing:border-box}
+body{margin:0;background:#f4f5f7;color:#20242a;font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
 header{background:#111827;color:#fff;padding:18px 16px}
-main{max-width:760px;margin:auto;padding:14px}
-.card{background:#fff;border-radius:14px;padding:16px;margin:12px 0;box-shadow:0 2px 10px #0001}
-input[type=text]{width:100%;box-sizing:border-box;padding:12px;border:1px solid #ccd1d8;border-radius:10px;margin:8px 0}
-button{border:0;border-radius:10px;padding:11px 15px;background:#111827;color:#fff;font-weight:700}
-button:disabled{opacity:.5}
-.horse{display:flex;gap:10px;padding:10px 0;border-bottom:1px solid #eee}
-.horse input{width:auto;margin-top:4px}
-.small{font-size:12px;color:#667085}
+main{max-width:760px;margin:auto;padding:12px}
+.card{background:#fff;border-radius:15px;padding:16px;margin:12px 0;box-shadow:0 2px 10px rgba(0,0,0,.07)}
+h2,h3{margin:0 0 12px}
+input[type=text]{width:100%;padding:13px;border:1px solid #ccd1d8;border-radius:10px;font-size:14px}
+button{margin-top:8px;border:0;border-radius:10px;padding:12px 16px;background:#111827;color:white;font-weight:700}
+button:disabled{opacity:.55}
+.status{margin-top:10px;font-size:13px}
+.ok{font-weight:700}
+.warn{color:#9a6700}
+.horse{display:flex;gap:10px;align-items:flex-start;padding:11px 0;border-bottom:1px solid #eee}
+.horse:last-child{border-bottom:0}
+.horse input{margin-top:4px}
+.num{font-weight:800;display:inline-block;min-width:42px}
+.small{font-size:12px;color:#697386}
 .airow{padding:12px 0;border-bottom:1px solid #eee}
-.badge{display:inline-block;min-width:28px;text-align:center;font-weight:800;margin-right:6px}
-.reason{font-size:13px;color:#555;margin-top:4px}
-.notice{padding:10px;border-radius:10px;background:#f3f4f6;font-size:13px}
+.airow:last-child{border-bottom:0}
+.badge{display:inline-block;width:28px;font-weight:900}
+.reason{font-size:13px;color:#596273;margin-top:4px;line-height:1.5}
+.summary{line-height:1.8}
 </style>
 </head>
 <body>
-<header><strong>🏇 ちゃとた競馬AI</strong><div class="small" style="color:#d1d5db">出馬表取得・買い目計算・AI分析プロトタイプ</div></header>
+<header>
+  <strong>🏇 ちゃとた競馬AI v8</strong>
+  <div class="small" style="color:#d1d5db">出馬表取得・買い目計算・AI分析</div>
+</header>
+
 <main>
 <div class="card">
-<h3>① レースを読み込む</h3>
-<input id="url" type="text" value="https://race.sp.netkeiba.com/race/shutuba.html?race_id=202606040611">
-<button id="load">レース情報を取得</button>
-<div id="status"></div>
+  <h3>① レースを読み込む</h3>
+  <input id="url" type="text" value="https://race.sp.netkeiba.com/race/shutuba.html?race_id=202606040611">
+  <button id="load">レース情報を取得</button>
+  <div id="status" class="status"></div>
 </div>
 
 <div class="card">
-<h3>② 馬を選択</h3>
-<div id="raceTitle" class="small">まだ読み込まれていません</div>
-<div id="horses"></div>
+  <h3>② 出走馬</h3>
+  <div id="raceTitle" class="small">まだ読み込まれていません</div>
+  <div id="horses"></div>
 </div>
 
 <div class="card">
-<h3>③ BOX点数</h3>
-<div>選択頭数：<span id="count">0</span>頭</div>
-<div>馬連BOX：<span id="umaren">0</span>点（¥<span id="uy">0</span>）</div>
-<div>3連複BOX：<span id="sanren">0</span>点（¥<span id="sy">0</span>）</div>
+  <h3>③ BOX点数</h3>
+  <div class="summary">
+    選択頭数：<b><span id="count">0</span>頭</b><br>
+    馬連BOX：<b><span id="umaren">0</span>点</b>（¥<span id="uy">0</span>）<br>
+    3連複BOX：<b><span id="sanren">0</span>点</b>（¥<span id="sy">0</span>）
+  </div>
 </div>
 
 <div class="card">
-<h3>④ AI分析</h3>
-<div id="ai" class="notice">レースを読み込むと、取得できた情報から暫定評価を作ります。</div>
+  <h3>④ AI分析</h3>
+  <div id="ai" class="small">レースを読み込むと暫定評価を表示します。</div>
 </div>
 </main>
 
 <script>
 const $=id=>document.getElementById(id);
-function C(n,r){if(n<r)return 0;let x=1;for(let i=1;i<=r;i++)x=x*(n-r+i)/i;return Math.round(x)}
-function up(){
-  let n=document.querySelectorAll('#horses input:checked').length;
-  let u=C(n,2),s=C(n,3);
-  $('count').textContent=n;$('umaren').textContent=u;$('uy').textContent=u*100;
-  $('sanren').textContent=s;$('sy').textContent=s*100;
+
+function comb(n,r){
+  if(n<r)return 0;
+  let x=1;
+  for(let i=1;i<=r;i++)x=x*(n-r+i)/i;
+  return Math.round(x);
 }
-function oddsFrom(text){
-  let ms=[...text.matchAll(/(?:単勝|オッズ|人気)?\s*(\d+(?:\.\d+)?)\s*(?:倍)?/g)];
-  let vals=ms.map(x=>parseFloat(x[1])).filter(x=>x>=1.0&&x<=999);
-  return vals.length?Math.min(...vals):null;
+
+function updateCounts(){
+  const n=document.querySelectorAll('#horses input[type=checkbox]:checked').length;
+  const u=comb(n,2), s=comb(n,3);
+  $('count').textContent=n;
+  $('umaren').textContent=u;
+  $('uy').textContent=u*100;
+  $('sanren').textContent=s;
+  $('sy').textContent=s*100;
 }
+
 function makeAI(horses){
-  // 現段階では取得できた出馬表テキストから機械的に候補を作る暫定エンジン。
-  // 調教・過去走・馬場・騎手・正式オッズ等は今後構造化して加点する。
-  let scored=horses.map((h,i)=>{
-    let score=50, reasons=[];
-    let o=oddsFrom(h.raw);
-    if(o!==null){
-      score += Math.max(0, 30-Math.min(30,o*3));
-      reasons.push('取得テキスト内のオッズ候補を反映');
-    }else{
-      reasons.push('オッズ情報を十分に取得できていないため暫定評価');
-    }
-    if(h.name) reasons.push('馬名を正しく取得');
-    // 同点が大量に出ないように、ごく小さい固定差だけ付与
-    score += Math.max(0,8-i*0.2);
-    return {...h,score,odds:o,reasons};
-  }).sort((a,b)=>b.score-a.score);
+  if(!horses.length)return '<div class="small">出走馬を取得できませんでした。</div>';
 
   const labels=['◎','○','▲','☆'];
-  let out='<div class="small">現時点は「出馬表から取得できた情報」による暫定分析です。今後、調教・過去走・斤量・騎手・馬場・正式オッズ等を構造化して精度を上げます。</div>';
-  scored.slice(0,4).forEach((h,i)=>{
-    out+=`<div class="airow"><span class="badge">${labels[i]}</span><b>${h.number}番 ${h.name||''}</b> <span class="small">暫定${h.score.toFixed(1)}点</span><div class="reason">${h.reasons.join(' / ')}</div></div>`;
+  let out='<div class="small">現在は出馬表から取得できた馬番・馬名を中心にした「暫定AI分析」です。調教、過去走、斤量、騎手、馬場、正式オッズなどを取得できるようになった段階で評価精度を上げます。</div>';
+
+  horses.slice(0,4).forEach((h,i)=>{
+    out+=`<div class="airow">
+      <span class="badge">${labels[i]}</span>
+      <b>${h.number!=null ? h.number+'番 ' : ''}${h.name}</b>
+      <div class="reason">${h.number!=null ? '馬番・馬名を正常取得。' : '馬名は取得できましたが馬番を確認できていません。'}現段階では基礎データ確認による暫定評価です。</div>
+    </div>`;
   });
   return out;
 }
+
 $('load').onclick=async()=>{
-  let b=$('load');b.disabled=true;$('status').textContent='取得中…';
+  const btn=$('load');
+  btn.disabled=true;
+  $('status').textContent='取得中…';
+
   try{
-    let r=await fetch('/api/race',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url:$('url').value.trim()})});
-    let d=await r.json(); if(!r.ok)throw Error(d.error||'取得に失敗しました');
-    $('raceTitle').textContent=d.title+' / '+d.horses.length+'頭';
-    $('horses').innerHTML='';
-    d.horses.forEach(h=>{
-      let x=document.createElement('label');x.className='horse';
-      x.innerHTML='<input type="checkbox"><div><b>'+h.number+'番</b> '+(h.name||h.raw)+'</div>';
-      x.querySelector('input').onchange=up;$('horses').appendChild(x);
+    const res=await fetch('/api/race',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({url:$('url').value.trim()})
     });
-    $('status').textContent='取得完了：'+d.horses.length+'頭';
-    $('ai').innerHTML=makeAI(d.horses);
-    up();
-  }catch(e){$('status').textContent='⚠️ '+e.message}
-  finally{b.disabled=false}
-}
+    const data=await res.json();
+    if(!res.ok)throw new Error(data.error||'取得に失敗しました');
+
+    $('raceTitle').innerHTML=`${data.title}<br><b class="ok">${data.horses.length}頭取得</b>`;
+    $('horses').innerHTML='';
+
+    data.horses.forEach(h=>{
+      const label=document.createElement('label');
+      label.className='horse';
+      const number=h.number!=null ? h.number+'番' : '番号未取得';
+      label.innerHTML=`<input type="checkbox"><div><span class="num">${number}</span>${h.name}</div>`;
+      label.querySelector('input').addEventListener('change',updateCounts);
+      $('horses').appendChild(label);
+    });
+
+    $('status').innerHTML=`✅ 取得完了：<b>${data.horses.length}頭</b>`;
+    $('ai').innerHTML=makeAI(data.horses);
+    updateCounts();
+
+  }catch(e){
+    $('status').textContent='⚠️ '+e.message;
+  }finally{
+    btn.disabled=false;
+  }
+};
 </script>
 </body>
 </html>
