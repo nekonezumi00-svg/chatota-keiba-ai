@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ちゃとた競馬AI</title>
+<style>
+body{font-family:system-ui,-apple-system,sans-serif;margin:0;background:#f5f6f8;color:#222}
+header{background:#111827;color:#fff;padding:18px 16px}
+main{max-width:760px;margin:auto;padding:14px}
+.card{background:#fff;border-radius:14px;padding:16px;margin:12px 0;box-shadow:0 2px 10px #00000010}
+input,button{font:inherit}
+input{width:100%;box-sizing:border-box;padding:12px;border:1px solid #ccd1d8;border-radius:10px;margin:8px 0}
+button{border:0;border-radius:10px;padding:11px 15px;background:#111827;color:#fff;font-weight:700}
+button:disabled{opacity:.5}
+.status{margin-top:10px;font-size:14px}
+.horse{display:flex;gap:10px;align-items:flex-start;padding:10px 0;border-bottom:1px solid #eee}
+.horse:last-child{border-bottom:0}
+.horse input{width:auto;margin-top:4px}
+.small{font-size:12px;color:#667085}
+.result{font-size:18px;font-weight:700}
+</style>
+</head>
+<body>
+<header><strong>🏇 ちゃとた競馬AI</strong><div class="small" style="color:#d1d5db">netkeibaレース情報取得・買い目計算プロトタイプ</div></header>
+<main>
+<div class="card">
+<h3>① レースを読み込む</h3>
+<input id="url" value="https://race.sp.netkeiba.com/race/shutuba.html?race_id=202606040611" placeholder="netkeibaの出馬表URL">
+<button id="load">レース情報を取得</button>
+<div id="status" class="status"></div>
+</div>
+
+<div class="card">
+<h3>② 馬を選択</h3>
+<div id="raceTitle" class="small">まだ読み込まれていません</div>
+<div id="horses"></div>
+</div>
+
+<div class="card">
+<h3>③ BOX点数</h3>
+<div>選択頭数：<span id="count">0</span>頭</div>
+<div>馬連BOX：<span id="umaren">0</span>点（<span id="umarenY">¥0</span>）</div>
+<div>3連複BOX：<span id="sanren">0</span>点（<span id="sanrenY">¥0</span>）</div>
+</div>
+
+<div class="card">
+<h3>④ AI分析（サンプル）</h3>
+<p>◎ 本命：選択馬の中から軸候補を分析</p>
+<p>○ 対抗：相手候補</p>
+<p>▲ 単穴：中穴候補</p>
+<p>☆ 穴：展開・馬場・調教などから拾う候補</p>
+<div class="small">※現在はプロトタイプ。実際のAI評価・調教・過去走・オッズ連携は今後追加します。</div>
+</div>
+</main>
+<script>
+const $=id=>document.getElementById(id);
+function comb(n,r){if(n<r)return 0;let x=1;for(let i=1;i<=r;i++)x=x*(n-r+i)/i;return Math.round(x)}
+function update(){
+ const n=document.querySelectorAll('#horses input[type=checkbox]:checked').length;
+ $('count').textContent=n;
+ const u=comb(n,2),s=comb(n,3);
+ $('umaren').textContent=u;$('umarenY').textContent='¥'+u*100;
+ $('sanren').textContent=s;$('sanrenY').textContent='¥'+s*100;
+}
+$('load').onclick=async()=>{
+ const url=$('url').value.trim();
+ $('status').textContent='取得中…';
+ $('load').disabled=true;
+ try{
+  const res=await fetch('/api/race',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url})});
+  const data=await res.json();
+  if(!res.ok)throw new Error(data.error||'取得に失敗しました');
+  $('raceTitle').textContent=`${data.title} / Race ID: ${data.race_id}`;
+  $('horses').innerHTML='';
+  data.horses.forEach((h,i)=>{
+   const div=document.createElement('label');div.className='horse';
+   div.innerHTML=`<input type="checkbox"><div><b>${i+1}.</b> ${h.raw}</div>`;
+   div.querySelector('input').onchange=update;
+   $('horses').appendChild(div);
+  });
+  $('status').textContent=`取得完了：${data.horses.length}件`;
+  update();
+ }catch(e){$('status').textContent='⚠️ '+e.message}
+ finally{$('load').disabled=false}
+}
+</script>
+</body>
+</html>
