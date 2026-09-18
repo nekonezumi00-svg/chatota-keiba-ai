@@ -1,213 +1,138 @@
-import os, re, requests
+import os,re,requests
 from bs4 import BeautifulSoup
-from flask import Flask, jsonify, request, send_from_directory
+from flask import Flask,jsonify,request,send_from_directory
 
-app = Flask(__name__, static_folder=".", static_url_path="")
+app=Flask(__name__,static_folder=".",static_url_path="")
+RACE_ID_RE=re.compile(r"(?:race_id=|/race/)(\d{10,12})")
 
-RACE_ID_RE = re.compile(r"(?:race_id=|/race/)(\d{10,12})")
-
-def horse_links_in(node):
-    seen = {}
+def unique_horse_links(node):
+    seen={}
     for a in node.select("a[href*='/horse/']"):
-        name = a.get_text(" ", strip=True)
-        href = (a.get("href") or "").split("?")[0]
-        if not name or not href:
-            continue
-        seen[href] = (name, a)
+        name=a.get_text(" ",strip=True)
+        href=(a.get("href") or "").split("?")[0]
+        if name and href and href not in seen:
+            seen[href]=(name,a)
     return list(seen.values())
 
-def number_from_text(text, name=""):
-    text = re.sub(r"\s+", " ", text or "").strip()
-
-    # Strong signals first.
-    patterns = [
-        r"馬番\s*[:：]?\s*(1[0-8]|[1-9])\b",
-        r"馬番\s*(1[0-8]|[1-9])\b",
-    ]
-    for pat in patterns:
-        m = re.search(pat, text)
-        if m:
-            return int(m.group(1))
-
-    # If the horse name is present, use the nearest number immediately before it.
-    if name:
-        pos = text.find(name)
-        if pos >= 0:
-            prefix = text[max(0, pos - 80):pos]
-            nums = list(re.finditer(r"(?<!\d)(1[0-8]|[1-9])(?!\d)", prefix))
+def parse_number_near_anchor(a,name):
+    cur=a
+    for _ in range(6):
+        if cur is None: break
+        # Explicit attributes/classes first
+        for el in cur.select("[data-umaban],[data-horse-no],[data-number],.Umaban,.Num,.WakuNum,.WakuNumBox,[class*='Umaban'],[class*='umaban']"):
+            txt=el.get_text(" ",strip=True)
+            m=re.search(r"(?<!\d)(1[0-8]|[1-9])(?!\d)",txt)
+            if m: return int(m.group(1))
+        txt=re.sub(r"\s+"," ",cur.get_text(" ",strip=True))
+        pos=txt.find(name)
+        if pos>=0:
+            before=txt[max(0,pos-100):pos]
+            nums=list(re.finditer(r"(?<!\d)(1[0-8]|[1-9])(?!\d)",before))
             if nums:
                 return int(nums[-1].group(1))
-
-    # Common explicit number-like class/attribute text.
+        cur=cur.parent
     return None
 
-def parse_candidate_container(container):
-    items = []
-    for name, a in horse_links_in(container):
-        num = None
-
-        # Search the anchor and a few ancestors for explicit horse-number elements.
-        cur = a
-        for _ in range(5):
-            if cur is None:
-                break
-            selectors = [
-                "[data-umaban]", "[data-horse-no]", "[data-number]",
-                ".Umaban", ".Num", ".WakuNum", ".WakuNumBox",
-                "[class*='Umaban']", "[class*='umaban']"
-            ]
-            for sel in selectors:
-                try:
-                    el = cur.select_one(sel)
-                except Exception:
-                    el = None
-                if el:
-                    raw = el.get_text(" ", strip=True)
-                    m = re.search(r"(?<!\d)(1[0-8]|[1-9])(?!\d)", raw)
-                    if m:
-                        num = int(m.group(1))
-                        break
-            if num is not None:
-                break
-
-            txt = cur.get_text(" ", strip=True)
-            num = number_from_text(txt, name)
-            if num is not None:
-                break
-            cur = cur.parent
-
+def build_items(links):
+    items=[]
+    for name,a in links:
         items.append({
-            "number": num,
-            "name": name,
-            "href": a.get("href", ""),
-            "raw": a.parent.get_text(" ", strip=True) if a.parent else name
+            "name":name,
+            "href":a.get("href",""),
+            "number":parse_number_near_anchor(a,name)
         })
     return items
 
-def fetch_race(url):
-    m = RACE_ID_RE.search(url)
-    if not m:
-        raise ValueError("netkeibaのレースURLからrace_idを取得できませんでした。")
-
-    race_id = m.group(1)
-    r = requests.get(
-        url,
-        headers={
-            "User-Agent": (
-                "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 "
-                "(KHTML, like Gecko) Chrome/130.0 Mobile Safari/537.36"
-            )
-        },
-        timeout=20
-    )
-    r.raise_for_status()
-
-    soup = BeautifulSoup(r.text, "html.parser")
-    title = soup.title.get_text(" ", strip=True) if soup.title else f"Race {race_id}"
-
-    # 1) Prefer entry-list rows. This avoids unrelated horse links elsewhere on the page.
-    candidates = []
-    row_selectors = [
-        "tr.HorseList", "tr[class*='HorseList']",
-        "li.HorseList", "li[class*='HorseList']",
-        "div.HorseList", "div[class*='HorseList']",
-        ".Shutuba_Table tr", ".RaceTable tr",
-        "table tr"
+def candidate_sets(soup):
+    sets=[]
+    selectors=[
+        "tr.HorseList","tr[class*='HorseList']",
+        "li.HorseList","li[class*='HorseList']",
+        "div.HorseList","div[class*='HorseList']",
+        ".Shutuba_Table","[class*='Shutuba']",
+        ".RaceTable","[class*='RaceTable']",
+        "table"
     ]
+    for sel in selectors:
+        for node in soup.select(sel):
+            links=unique_horse_links(node)
+            n=len(links)
+            if 2<=n<=18:
+                sets.append(build_items(links))
+    # Every ancestor of every horse link is also a candidate.
+    for a in soup.select("a[href*='/horse/']"):
+        cur=a
+        for _ in range(7):
+            if cur is None: break
+            links=unique_horse_links(cur)
+            n=len(links)
+            if 2<=n<=18:
+                sets.append(build_items(links))
+            cur=cur.parent
+    # Whole page candidate, if it contains a plausible number of horse links.
+    links=unique_horse_links(soup)
+    if 2<=len(links)<=18:
+        sets.append(build_items(links))
+    return sets
 
-    for sel in row_selectors:
-        rows = soup.select(sel)
-        if not rows:
-            continue
-        found = []
-        for row in rows:
-            hs = parse_candidate_container(row)
-            if hs:
-                found.extend(hs)
-        # Prefer a plausible full field of 2-18 unique horses.
-        unique = {}
-        for x in found:
-            unique[x["href"].split("?")[0] if x["href"] else x["name"]] = x
-        if 2 <= len(unique) <= 18:
-            candidates = list(unique.values())
-            break
-        if len(found) > len(candidates):
-            candidates = found
+def score_candidate(items):
+    # Prefer the largest plausible group; a real entry list is normally the
+    # largest contiguous group of horse-detail links on a shutuba page.
+    n=len(items)
+    numbered=sum(x["number"] is not None for x in items)
+    unique_nums=len({x["number"] for x in items if x["number"] is not None})
+    return (n, numbered, unique_nums)
 
-    # 2) If row classes differ, find a parent container around horse links
-    # containing a plausible number of unique horses.
-    if len(candidates) < 2:
-        anchors = soup.select("a[href*='/horse/']")
-        for a in anchors:
-            cur = a
-            for _ in range(7):
-                if cur is None:
-                    break
-                hs = horse_links_in(cur)
-                if 2 <= len(hs) <= 18:
-                    candidates = parse_candidate_container(cur)
-                    break
-                cur = cur.parent
-            if len(candidates) >= 2:
-                break
+def fetch_race(url):
+    m=RACE_ID_RE.search(url)
+    if not m: raise ValueError("netkeibaのレースURLからrace_idを取得できませんでした。")
+    race_id=m.group(1)
 
-    # 3) Last resort: use unique horse-detail links, but only if page contains
-    # a plausible entry count. Horse-detail links are much safer than arbitrary text.
-    if len(candidates) < 2:
-        hs = horse_links_in(soup)
-        if 2 <= len(hs) <= 18:
-            candidates = parse_candidate_container(soup)
+    r=requests.get(url,headers={"User-Agent":"Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 Chrome/130.0 Mobile Safari/537.36"},timeout=20)
+    r.raise_for_status()
+    soup=BeautifulSoup(r.text,"html.parser")
+    title=soup.title.get_text(" ",strip=True) if soup.title else f"Race {race_id}"
 
-    # Deduplicate by horse URL/name.
-    unique = {}
-    for x in candidates:
-        key = x["href"].split("?")[0] if x["href"] else x["name"]
-        if key not in unique:
-            unique[key] = x
-        elif unique[key]["number"] is None and x["number"] is not None:
-            unique[key] = x
+    candidates=candidate_sets(soup)
+    if not candidates:
+        return {"race_id":race_id,"title":title,"horses":[],"horse_link_count":len(unique_horse_links(soup))}
 
-    horses = list(unique.values())
+    # Critical v9 change: don't take the first 4/5-link container.
+    # Choose the largest plausible horse group.
+    best=max(candidates,key=score_candidate)
 
-    # Assign real numbers where confidently parsed. If a number is missing,
-    # keep the horse rather than silently dropping it; frontend marks it "番号未取得".
-    numbered = [x for x in horses if x["number"] is not None]
-    unnumbered = [x for x in horses if x["number"] is None]
+    # Deduplicate and keep all detected horses.
+    by_href={}
+    for x in best:
+        by_href[x["href"].split("?")[0]]=x
+    horses=list(by_href.values())
 
-    # Remove duplicate known horse numbers.
-    by_num = {}
-    for x in numbered:
-        by_num.setdefault(x["number"], x)
-    numbered = list(by_num.values())
-    numbered.sort(key=lambda x: x["number"])
-
-    # Preserve unnumbered horses after numbered horses.
-    horses = numbered + unnumbered
+    # If duplicate numbers occur, only remove duplicates when the same horse
+    # link is duplicated; do not throw away legitimate horses just because
+    # number parsing was imperfect.
+    known=[x for x in horses if x["number"] is not None]
+    unknown=[x for x in horses if x["number"] is None]
+    known.sort(key=lambda x:x["number"])
+    horses=known+unknown
 
     return {
-        "race_id": race_id,
-        "title": title,
-        "horses": horses,
-        "horse_link_count": len(horse_links_in(soup))
+        "race_id":race_id,
+        "title":title,
+        "horses":horses,
+        "horse_link_count":len(unique_horse_links(soup))
     }
 
 @app.get("/")
-def index():
-    return send_from_directory(".", "index.html")
+def index(): return send_from_directory(".","index.html")
 
 @app.post("/api/race")
 def api_race():
-    body = request.get_json(silent=True) or {}
-    url = (body.get("url") or "").strip()
-    if not url:
-        return jsonify({"error": "netkeibaのレースURLを入力してください。"}), 400
+    body=request.get_json(silent=True) or {}
+    url=(body.get("url") or "").strip()
+    if not url:return jsonify({"error":"netkeibaのレースURLを入力してください。"}),400
+    try:return jsonify(fetch_race(url))
+    except requests.RequestException as e:return jsonify({"error":f"レースページを取得できませんでした: {e}"}),502
+    except Exception as e:return jsonify({"error":str(e)}),400
 
-    try:
-        return jsonify(fetch_race(url))
-    except requests.RequestException as e:
-        return jsonify({"error": f"レースページを取得できませんでした: {e}"}), 502
-    except Exception as e:
-        return jsonify({"error": str(e)}), 400
-
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", "5000")), debug=False)
+if __name__=="__main__":
+    app.run(host="0.0.0.0",port=int(os.environ.get("PORT","5000")),debug=False)
